@@ -1,15 +1,13 @@
-
 {
-  "name": "telegram-key-bot",
+  "name": "telegram-keybot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.61.0",
-    "mongoose": "^7.2.3",
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2"
+    "dotenv": "^16.4.0",
+    "mongoose": "^7.0.0",
+    "node-telegram-bot-api": "^0.61.0"
   }
 }
