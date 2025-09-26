@@ -1,12 +1,13 @@
 import TelegramBot from "node-telegram-bot-api";
 import { db, ref, set, get } from "./firebase-config.js";
+import 'dotenv/config';
 
 // Bot Token & Admin ID
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const ADMIN_ID = process.env.ADMIN_ID;
 
-// Default QR Code Link (Admin can update)
-const DEFAULT_QR = "https://files.catbox.moe/pfnulr.png";
+// Default QR Code Link
+const DEFAULT_QR = "https://your-qr-code-link.png";
 
 // /start → Welcome + Buttons
 bot.onText(/\/start/, (msg) => {
@@ -27,7 +28,10 @@ bot.onText(/\/start/, (msg) => {
 // Admin sets QR link
 bot.onText(/\/setqr (.+)/, async (msg, match) => {
   const adminId = msg.chat.id;
-  if (adminId != ADMIN_ID) return bot.sendMessage(adminId, "❌ You are not authorized.");
+  if (adminId != ADMIN_ID) {
+    bot.sendMessage(adminId, "❌ You are not authorized.");
+    return; // ✅ return inside function is ok
+  }
 
   const newQR = match[1];
   await set(ref(db, "config/qr_url"), newQR);
@@ -39,17 +43,22 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
+  // Ignore commands handled elsewhere
+  if (text.startsWith("/")) return;
+
   // Deposit
   if (text === "💳 Deposit") {
     await set(ref(db, `pending/${chatId}`), { step: "amount" });
-    return bot.sendMessage(chatId, "📌 কত টাকা Add করতে চান লিখুন (যেমন: 100):");
+    bot.sendMessage(chatId, "📌 কত টাকা Add করতে চান লিখুন (যেমন: 100):");
+    return;
   }
 
   // Balance check
   if (text === "💰 Balance") {
     const snapshot = await get(ref(db, `balances/${chatId}`));
     const balance = snapshot.exists() ? snapshot.val() : 0;
-    return bot.sendMessage(chatId, `💰 আপনার বর্তমান Balance: ${balance} INR`);
+    bot.sendMessage(chatId, `💰 আপনার বর্তমান Balance: ${balance} INR`);
+    return;
   }
 
   // Pending Step
@@ -67,10 +76,11 @@ bot.on("message", async (msg) => {
     const qrSnap = await get(ref(db, "config/qr_url"));
     const qrUrl = qrSnap.exists() ? qrSnap.val() : DEFAULT_QR;
 
-    return bot.sendPhoto(chatId, qrUrl, {
+    bot.sendPhoto(chatId, qrUrl, {
       caption: `💳 আপনি *${amount} INR* Add করতে চাইছেন।\nScan QR Code & pay, তারপর 12-digit UTR লিখুন।`,
       parse_mode: "Markdown"
     });
+    return;
   }
 
   // Step 2 → UTR
@@ -98,7 +108,10 @@ bot.on("message", async (msg) => {
 // Admin Approve
 bot.onText(/\/approve (\d+) (\d{12}) (\d+)/, async (msg, match) => {
   const adminId = msg.chat.id;
-  if (adminId != ADMIN_ID) return bot.sendMessage(adminId, "❌ You are not authorized.");
+  if (adminId != ADMIN_ID) {
+    bot.sendMessage(adminId, "❌ You are not authorized.");
+    return;
+  }
 
   const userId = match[1];
   const utr = match[2];
@@ -115,48 +128,4 @@ bot.onText(/\/approve (\d+) (\d{12}) (\d+)/, async (msg, match) => {
   // Notify User & Admin
   bot.sendMessage(userId, `✅ আপনার ${amount} INR Admin Approved!\n💰 বর্তমান Balance: ${balance + amount} INR`);
   bot.sendMessage(adminId, `✅ User ${userId} কে ${amount} INR Add করা হলো। Balance: ${balance + amount}`);
-});
-  if (!user.reseller) {
-    return bot.sendMessage(chatId, "❌ You are not a reseller.");
-  }
-
-  bot.sendMessage(chatId,
-    "📊 Reseller Panel:\n- Create keys for clients\n- Earn 15% cashback per key"
-  );
-});
-
-// ========================
-// 🔹 Admin Commands
-// ========================
-
-// /broadcast
-bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== process.env.ADMIN_ID) return;
-  const text = match[1];
-  const users = await User.find({});
-  users.forEach(u => bot.sendMessage(u.userId, `📢 Admin: ${text}`));
-});
-
-// /addwallet userId amount
-bot.onText(/\/addwallet (\d+) (\d+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== process.env.ADMIN_ID) return;
-  const [ , userId, amount ] = match;
-  const user = await User.findOne({ userId });
-  if (!user) return bot.sendMessage(msg.chat.id, "❌ User not found.");
-  user.wallet += parseInt(amount);
-  await user.save();
-  bot.sendMessage(msg.chat.id, `✅ Added ${amount}💰 to ${userId}`);
-  bot.sendMessage(userId, `💳 Admin added ${amount}💰 to your wallet.`);
-});
-
-// /makeReseller userId
-bot.onText(/\/makeReseller (\d+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== process.env.ADMIN_ID) return;
-  const userId = match[1];
-  const user = await User.findOne({ userId });
-  if (!user) return bot.sendMessage(msg.chat.id, "❌ User not found.");
-  user.reseller = true;
-  await user.save();
-  bot.sendMessage(msg.chat.id, `✅ User ${userId} is now a Reseller.`);
-  bot.sendMessage(userId, "🎉 You are now a Reseller!");
 });
