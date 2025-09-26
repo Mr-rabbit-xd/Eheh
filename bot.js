@@ -6,7 +6,7 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const ADMIN_ID = process.env.ADMIN_ID;
 
 // Default QR Code Link (Admin can update)
-const DEFAULT_QR = "https://your-qr-code-link.png";
+const DEFAULT_QR = "https://files.catbox.moe/pfnulr.png";
 
 // /start → Welcome + Buttons
 bot.onText(/\/start/, (msg) => {
