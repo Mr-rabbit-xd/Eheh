@@ -85,10 +85,14 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
+  // Ignore commands
+  if (text.startsWith("/")) return;
+
   // User Menu Buttons
   if (text === "💰 Deposit") {
     depositStep[chatId] = true;
-    return bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? (যেমন: 100, 200)");
+    await bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? (যেমন: 100, 200)");
+    return;
   }
 
   if (text === "📊 Balance") {
@@ -97,18 +101,23 @@ bot.on("message", async (msg) => {
       user = new User({ userId: chatId, balance: 0 });
       await user.save();
     }
-    return bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`);
+    await bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`);
+    return;
   }
 
   if (text === "📜 History") {
     const deposits = await Deposit.find({ userId: chatId }).sort({ date: -1 });
-    if (!deposits.length) return bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।");
+    if (!deposits.length) {
+      await bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।");
+      return;
+    }
 
     let historyText = "📜 আপনার Deposit History:\n\n";
     deposits.forEach(d => {
       historyText += `💰 ${d.amount} INR | UTR: ${d.utr} | Status: ${d.status}\n`;
     });
-    return bot.sendMessage(chatId, historyText);
+    await bot.sendMessage(chatId, historyText);
+    return;
   }
 
   // STEP 1: Deposit Amount
@@ -125,11 +134,17 @@ bot.on("message", async (msg) => {
   // STEP 2: UTR
   if (utrStep[chatId]) {
     const utr = text.trim();
-    if (utr.length < 12) return bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
+    if (utr.length < 12) {
+      await bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
+      return;
+    }
 
     // Duplicate Check
     const existing = await Deposit.findOne({ utr });
-    if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
+    if (existing) {
+      await bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
+      return;
+    }
 
     // Save Deposit
     const deposit = new Deposit({ userId: chatId, amount: utrStep[chatId].amount, utr, status: "pending" });
@@ -156,6 +171,7 @@ bot.on("message", async (msg) => {
     );
 
     delete utrStep[chatId];
+    return;
   }
 });
 
@@ -207,7 +223,7 @@ bot.on("callback_query", async (query) => {
 
 // ================= ADMIN QR CHANGE =================
 bot.onText(/\/setqr (.+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR পরিবর্তন করতে পারবে।");
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
   QR_IMAGE = match[1];
   await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হলো!\n📌 ${QR_IMAGE}`);
 });
@@ -249,85 +265,4 @@ bot.onText(/\/setref (\d+) (\d+)/, async (msg, match) => {
 process.on("unhandledRejection", (err) => console.error("Unhandled Rejection:", err));
 process.on("uncaughtException", (err) => console.error("Uncaught Exception:", err));
 
-console.log("🤖 Bot is ready and running...");  // STEP 2: UTR
-  if (utrStep[chatId]) {
-    const utr = text.trim();
-    if (utr.length < 12) return bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
-
-    // Duplicate Check
-    const existing = await Deposit.findOne({ utr });
-    if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
-
-    // Save Deposit
-    const deposit = new Deposit({ userId: chatId, amount: utrStep[chatId].amount, utr, status: "pending" });
-    await deposit.save();
-
-    await bot.sendMessage(chatId, `✅ Deposit Request Created!\n💰 Amount: ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`);
-
-    // Admin Notification with Inline Buttons
-    const approveData = `approve_${deposit._id}`;
-    const cancelData = `cancel_${deposit._id}`;
-
-    await bot.sendMessage(ADMIN_ID,
-      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "✅ Approve", callback_data: approveData },
-              { text: "❌ Cancel", callback_data: cancelData }
-            ]
-          ]
-        }
-      }
-    );
-
-    delete utrStep[chatId];
-  }
-});
-
-// ================= ADMIN INLINE BUTTON CALLBACK =================
-bot.on("callback_query", async (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-
-  if (chatId.toString() !== ADMIN_ID) {
-    return bot.answerCallbackQuery(query.id, { text: "❌ শুধুমাত্র Admin পারবেন।" });
-  }
-
-  const [action, depositId] = data.split("_");
-  const deposit = await Deposit.findById(depositId);
-  if (!deposit) return bot.answerCallbackQuery(query.id, { text: "❌ Deposit পাওয়া যায়নি।" });
-
-  const user = await User.findOne({ userId: deposit.userId }) || new User({ userId: deposit.userId, balance: 0 });
-
-  if (action === "approve") {
-    user.balance += deposit.amount;
-    deposit.status = "approved";
-    await user.save();
-    await deposit.save();
-
-    bot.sendMessage(deposit.userId, `✅ আপনার ${deposit.amount} INR Deposit Approved হয়েছে!\n📊 New Balance: ${user.balance} INR`);
-    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
-    bot.answerCallbackQuery(query.id, { text: "✅ Approved!" });
-
-  } else if (action === "cancel") {
-    deposit.status = "cancelled";
-    await deposit.save();
-
-    bot.sendMessage(deposit.userId, `❌ আপনার Deposit ${deposit.amount} INR Cancelled হয়েছে।`);
-    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
-    bot.answerCallbackQuery(query.id, { text: "❌ Cancelled!" });
-  }
-});
-
-// ================= ADMIN QR CHANGE =================
-bot.onText(/\/setqr (.+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR পরিবর্তন করতে পারবে।");
-  QR_IMAGE = match[1];
-  await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হলো!\n📌 ${QR_IMAGE}`);
-});
-
-// ================= ERROR HANDLER =================
-process.on("unhandledRejection", (err) => console.error("Unhandled Rejection:", err));
-process.on("uncaughtException", (err) => console.error("Uncaught Exception:", err));
+console.log("🤖 Bot is ready and running...");
