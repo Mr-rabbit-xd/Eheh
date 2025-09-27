@@ -1,165 +1,106 @@
 import TelegramBot from "node-telegram-bot-api";
-import dotenv from "dotenv";
-import pkg from "firebase-admin";
+import mongoose from "mongoose";
 
-dotenv.config();
-const { initializeApp, credential, database } = pkg;
+const token = process.env.BOT_TOKEN;
+const mongoURL = process.env.MONGO_URL;
+const ADMIN_ID = process.env.ADMIN_ID;
 
-// 🔹 Firebase Init
-initializeApp({
-  credential: credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
-  databaseURL: process.env.FIREBASE_DB_URL,
+let QR_IMAGE = process.env.QR_IMAGE || "https://via.placeholder.com/300?text=QR+Code";
+
+const bot = new TelegramBot(token, { polling: true });
+
+// ================= DB Connect =================
+mongoose.connect(mongoURL, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.log("❌ MongoDB Error:", err));
+
+// ================= Schemas =================
+const userSchema = new mongoose.Schema({
+  userId: String,
+  balance: { type: Number, default: 0 }
 });
+const User = mongoose.model("User", userSchema);
 
-const db = database();
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const depositSchema = new mongoose.Schema({
+  userId: String,
+  amount: Number,
+  status: { type: String, default: "pending" }
+});
+const Deposit = mongoose.model("Deposit", depositSchema);
 
-const ADMIN_ID = process.env.ADMIN_ID; // 🔹 তোমার Telegram ID
-
-// ===============================
-// START COMMAND
-// ===============================
-bot.onText(/\/start/, (msg) => {
+// ================= Commands =================
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-
-  bot.sendMessage(
-    chatId,
-    "👋 স্বাগতম!\n\n💳 Deposit করতে বা 💰 Balance চেক করতে নিচের বাটন ব্যবহার করুন।",
-    {
-      reply_markup: {
-        keyboard: [["💳 Deposit", "💰 Balance"]],
-        resize_keyboard: true,
-      },
-    }
-  );
+  await bot.sendMessage(chatId, `👋 Welcome ${msg.from.first_name}!\n\nCommands:\n💰 /deposit - টাকা Add করো\n📊 /balance - Balance Check করো`);
 });
 
-// ===============================
-// HANDLE BUTTONS
-// ===============================
+bot.onText(/\/balance/, async (msg) => {
+  const chatId = msg.chat.id;
+  let user = await User.findOne({ userId: chatId });
+  if (!user) {
+    user = new User({ userId: chatId, balance: 0 });
+    await user.save();
+  }
+  await bot.sendMessage(chatId, `📊 Your Balance: ${user.balance} INR`);
+});
+
+const depositStep = {};
+
+bot.onText(/\/deposit/, async (msg) => {
+  const chatId = msg.chat.id;
+  depositStep[chatId] = true;
+  await bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? Amount লিখো (যেমন: 100, 200)");
+});
+
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // 💰 Balance
-  if (text === "💰 Balance") {
-    const snapshot = await db.ref(`users/${chatId}/balance`).once("value");
-    const balance = snapshot.val() || 0;
-    return bot.sendMessage(chatId, `💰 আপনার বর্তমান Balance: ${balance} INR`);
-  }
-
-  // 💳 Deposit
-  if (text === "💳 Deposit") {
-    await db.ref(`users/${chatId}/state`).set("waiting_amount");
-    return bot.sendMessage(chatId, "📌 কত টাকা Add করতে চান লিখুন (যেমন: 100)");
-  }
-
-  // ===============================
-  // Deposit Amount Step
-  // ===============================
-  const stateSnap = await db.ref(`users/${chatId}/state`).once("value");
-  const state = stateSnap.val();
-
-  if (state === "waiting_amount" && !isNaN(text)) {
+  if (depositStep[chatId] && !isNaN(text)) {
     const amount = parseInt(text);
 
-    // ইউজার ডাটায় save করবো
-    await db.ref(`users/${chatId}`).update({
-      pendingAmount: amount,
-      state: "waiting_utr",
+    const deposit = new Deposit({ userId: chatId, amount });
+    await deposit.save();
+
+    await bot.sendPhoto(chatId, QR_IMAGE, {
+      caption: `📥 Deposit Request Created!\n\nAmount: ${amount} INR\n\n📌 QR Code Scan করে টাকা পাঠাও।`
     });
 
-    // Admin সেট করা QR code আনবো
-    const qrSnap = await db.ref("settings/qr").once("value");
-    const qrUrl = qrSnap.val() || "https://via.placeholder.com/300x300.png?text=Set+QR";
+    await bot.sendMessage(ADMIN_ID, `📢 নতুন Deposit Request এসেছে:\n\n👤 User: ${msg.from.username || msg.from.first_name}\n🆔 ID: ${chatId}\n💰 Amount: ${amount} INR\n\nApprove করতে:\n/approve ${chatId} ${amount}`);
 
-    return bot.sendPhoto(chatId, qrUrl, {
-      caption: `💳 আপনি ${amount} INR Add করতে চাইছেন\n\n👉 QR স্ক্যান করে Payment করুন\nতারপর 12-digit UTR লিখুন।`,
-    });
-  }
-
-  // ===============================
-  // Deposit UTR Step
-  // ===============================
-  if (state === "waiting_utr" && /^\d{12}$/.test(text)) {
-    const amountSnap = await db.ref(`users/${chatId}/pendingAmount`).once("value");
-    const amount = amountSnap.val();
-
-    if (!amount) return bot.sendMessage(chatId, "⚠️ কোনো Pending Amount পাওয়া যায়নি। আবার চেষ্টা করুন।");
-
-    // একই UTR আগে ব্যবহার হয়েছে কিনা check
-    const utrCheck = await db.ref(`utrs/${text}`).once("value");
-    if (utrCheck.exists()) {
-      return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার করা হয়েছে!");
-    }
-
-    // Save request
-    await db.ref(`requests/${chatId}_${text}`).set({
-      userId: chatId,
-      amount,
-      utr: text,
-      status: "pending",
-    });
-
-    // UTR mark as used
-    await db.ref(`utrs/${text}`).set(true);
-
-    // ইউজারের state reset
-    await db.ref(`users/${chatId}`).update({ state: null, pendingAmount: null });
-
-    // Admin কে জানানো হবে
-    bot.sendMessage(
-      ADMIN_ID,
-      `🆕 Deposit Request\n👤 User: ${chatId}\n💰 Amount: ${amount} INR\n🧾 UTR: ${text}\n\nApprove করতে:\n/approve ${chatId} ${text} ${amount}`
-    );
-
-    return bot.sendMessage(chatId, "✅ UTR Save হয়েছে। Admin Approval এর জন্য অপেক্ষা করুন।");
+    delete depositStep[chatId];
   }
 });
 
-// ===============================
-// ADMIN COMMAND: APPROVE
-// ===============================
-bot.onText(/\/approve (\d+) (\d{12}) (\d+)/, async (msg, match) => {
-  const adminId = msg.chat.id;
-  if (adminId != ADMIN_ID) return bot.sendMessage(adminId, "❌ আপনি Admin নন।");
+// Admin Approve
+bot.onText(/\/approve (.+) (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) {
+    return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin এই Command চালাতে পারবে।");
+  }
 
   const userId = match[1];
-  const utr = match[2];
-  const amount = parseInt(match[3]);
+  const amount = parseInt(match[2]);
 
-  // Request check
-  const reqSnap = await db.ref(`requests/${userId}_${utr}`).once("value");
-  if (!reqSnap.exists()) return bot.sendMessage(adminId, "⚠️ এই Request পাওয়া যায়নি।");
-
-  const reqData = reqSnap.val();
-  if (reqData.status === "approved") {
-    return bot.sendMessage(adminId, "❌ ইতিমধ্যে Approved হয়ে গেছে।");
+  let user = await User.findOne({ userId });
+  if (!user) {
+    user = new User({ userId, balance: 0 });
   }
+  user.balance += amount;
+  await user.save();
 
-  // User balance add
-  const balanceSnap = await db.ref(`users/${userId}/balance`).once("value");
-  const prevBalance = balanceSnap.val() || 0;
-  const newBalance = prevBalance + amount;
+  await Deposit.updateOne({ userId, amount, status: "pending" }, { status: "approved" });
 
-  await db.ref(`users/${userId}/balance`).set(newBalance);
-  await db.ref(`requests/${userId}_${utr}/status`).set("approved");
-
-  // User কে জানানো হবে
-  bot.sendMessage(userId, `✅ আপনার ${amount} INR Approved!\n💰 নতুন Balance: ${newBalance} INR`);
-
-  // Admin confirm
-  return bot.sendMessage(adminId, `✅ User ${userId} কে ${amount} INR Add করা হলো\nTotal Balance: ${newBalance} INR`);
+  await bot.sendMessage(userId, `✅ আপনার ${amount} INR জমা হয়েছে!\n📊 New Balance: ${user.balance} INR`);
+  await bot.sendMessage(msg.chat.id, `👍 Approved: ${amount} INR for User ${userId}`);
 });
 
-// ===============================
-// ADMIN COMMAND: SET QR
-// ===============================
+// Admin QR Change
 bot.onText(/\/setqr (.+)/, async (msg, match) => {
-  const adminId = msg.chat.id;
-  if (adminId != ADMIN_ID) return bot.sendMessage(adminId, "❌ আপনি Admin নন।");
+  if (msg.chat.id.toString() !== ADMIN_ID) {
+    return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR কোড পরিবর্তন করতে পারবে।");
+  }
 
-  const qrLink = match[1];
-  await db.ref("settings/qr").set(qrLink);
-  return bot.sendMessage(adminId, "✅ নতুন QR Link Save হয়েছে!");
+  const newQr = match[1];
+  QR_IMAGE = newQr;
+  await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হয়েছে!\n📌 ${QR_IMAGE}`);
 });
