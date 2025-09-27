@@ -6,8 +6,7 @@ import express from "express";
 const token = process.env.BOT_TOKEN;
 const mongoURL = process.env.MONGO_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
-const BOT_USERNAME = process.env.BOT_USERNAME; // Example: MyBot
-
+const BOT_USERNAME = process.env.BOT_USERNAME; // Example: H4CK_KEY_bot
 let QR_IMAGE = process.env.QR_IMAGE || "https://via.placeholder.com/300?text=QR+Code";
 
 // ================= TELEGRAM BOT =================
@@ -90,7 +89,37 @@ const transactionMenu = {
 const depositStep = {};
 const utrStep = {};
 
-// ======= MAIN BUTTON HANDLER =======
+// ================= START COMMAND =================
+bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const refCodeFromStart = match[1]; // /start ABC123
+
+  let user = await User.findOne({ userId: chatId });
+  if (!user) {
+    const newRefCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    user = new User({
+      userId: chatId,
+      balance: 0,
+      refCode: newRefCode,
+      referredBy: refCodeFromStart && refCodeFromStart !== newRefCode ? refCodeFromStart : null
+    });
+    await user.save();
+
+    if (refCodeFromStart) {
+      const refUser = await User.findOne({ refCode: refCodeFromStart });
+      if (refUser) {
+        bot.sendMessage(refUser.userId, `👤 আপনার referral দ্বারা নতুন user join করেছে!`);
+      }
+    }
+  } else if (!user.refCode) {
+    user.refCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    await user.save();
+  }
+
+  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\n💰 Deposit করতে "💰 Deposit" বাটন চাপুন\n📊 Balance দেখতে "📊 Balance"\n💸 Referral, 💳 Transaction সব মেনু বাটন ব্যবহার করুন।`, mainMenu);
+});
+
+// ================= MAIN BUTTON HANDLER =================
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -100,17 +129,20 @@ bot.on("message", async (msg) => {
 
   // ---------------- Main Menu ----------------
   if (text === "💰 Deposit") return bot.sendMessage(chatId, "Deposit Menu", depositMenu);
+
   if (text === "📊 Balance") {
     let user = await User.findOne({ userId: chatId });
     if (!user) user = await new User({ userId: chatId, balance: 0, refCode: Math.random().toString(36).substring(2,8).toUpperCase() }).save();
     return bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`, mainMenu);
   }
+
   if (text === "💸 Referral") {
     let user = await User.findOne({ userId: chatId });
     if (!user) user = await new User({ userId: chatId, balance: 0, refCode: Math.random().toString(36).substring(2,8).toUpperCase() }).save();
     const refLink = `https://t.me/${BOT_USERNAME}?start=${user.refCode}`;
     return bot.sendMessage(chatId, `💸 আপনার Referral Link:\n${refLink}`, referralMenu);
   }
+
   if (text === "💳 Transaction") return bot.sendMessage(chatId, "Transaction Menu", transactionMenu);
 
   // ---------------- Deposit Menu ----------------
@@ -118,6 +150,7 @@ bot.on("message", async (msg) => {
     depositStep[chatId] = true;
     return bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও?");
   }
+
   if (text === "📜 Deposit History") {
     const deposits = await Deposit.find({ userId: chatId }).sort({ date: -1 });
     if (!deposits.length) return bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।", depositMenu);
@@ -137,12 +170,14 @@ bot.on("message", async (msg) => {
     referrals.forEach(r => msgText += `👤 ${r.userId}\n`);
     return bot.sendMessage(chatId, msgText, referralMenu);
   }
+
   if (text === "🏆 Top Referrers") {
     const users = await User.find().sort({ balance: -1 }).limit(10);
     let msgText = "🏆 Top Referrers:\n\n";
     users.forEach(u => msgText += `👤 ${u.userId} - Balance: ${u.balance} INR\n`);
     return bot.sendMessage(chatId, msgText, referralMenu);
   }
+
   if (text === "💸 Your Referral Link") {
     const user = await User.findOne({ userId: chatId });
     const refLink = `https://t.me/${BOT_USERNAME}?start=${user.refCode}`;
@@ -174,28 +209,34 @@ bot.on("message", async (msg) => {
   if (utrStep[chatId]) {
     const utr = text.trim();
     if (utr.length < 12) return bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
+
+    // ✅ Duplicate Check
     const existing = await Deposit.findOne({ utr });
-    if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন দিন।");
+    if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
 
     const deposit = new Deposit({ userId: chatId, amount: utrStep[chatId].amount, utr, status: "pending" });
     await deposit.save();
 
-    // Admin notification with inline buttons
+    await bot.sendMessage(chatId, `✅ Deposit Request Created!\n💰 Amount: ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`);
+    utrStep[chatId] = null;
+
+    // Admin Notification with inline buttons
     const approveData = `approve_${deposit._id}`;
     const cancelData = `cancel_${deposit._id}`;
-
-    await bot.sendMessage(ADMIN_ID,
-      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`,
-      { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: approveData }, { text: "❌ Cancel", callback_data: cancelData }]] } }
+    await bot.sendMessage(ADMIN_ID, 
+      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${deposit.amount} INR\n🔑 UTR: ${utr}`, 
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "✅ Approve", callback_data: approveData }, { text: "❌ Cancel", callback_data: cancelData }]
+          ]
+        }
+      }
     );
-
-    await bot.sendMessage(chatId, `✅ Deposit Request Created!\n💰 Amount: ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`, depositMenu);
-    delete utrStep[chatId];
-    return;
   }
 });
 
-// ================= ADMIN CALLBACK =================
+// ================= ADMIN INLINE BUTTON CALLBACK =================
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
@@ -213,18 +254,14 @@ bot.on("callback_query", async (query) => {
     deposit.status = "approved";
     await user.save();
     await deposit.save();
-
-    bot.sendMessage(deposit.userId, `✅ আপনার ${deposit.amount} INR Deposit Approved!\n📊 New Balance: ${user.balance} INR`);
-    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
-    bot.answerCallbackQuery(query.id, { text: "✅ Approved!" });
-
+    bot.sendMessage(deposit.userId, `✅ আপনার ${deposit.amount} INR Deposit Approved হয়েছে!\n📊 New Balance: ${user.balance} INR`);
   } else if (action === "cancel") {
     deposit.status = "cancelled";
     await deposit.save();
     bot.sendMessage(deposit.userId, `❌ আপনার Deposit ${deposit.amount} INR Cancelled হয়েছে।`);
-    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
-    bot.answerCallbackQuery(query.id, { text: "❌ Cancelled!" });
   }
+  bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
+  bot.answerCallbackQuery(query.id, { text: action === "approve" ? "✅ Approved!" : "❌ Cancelled!" });
 });
 
 // ================= ADMIN QR CHANGE =================
