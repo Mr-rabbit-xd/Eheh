@@ -1,20 +1,29 @@
 import TelegramBot from "node-telegram-bot-api";
 import mongoose from "mongoose";
+import express from "express";
 
+// ================= ENV CONFIG =================
 const token = process.env.BOT_TOKEN;
 const mongoURL = process.env.MONGO_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
 
 let QR_IMAGE = process.env.QR_IMAGE || "https://via.placeholder.com/300?text=QR+Code";
 
+// ================= TELEGRAM BOT =================
 const bot = new TelegramBot(token, { polling: true });
 
-// ================= DB Connect =================
+// ================= EXPRESS SERVER (Keep Alive) =================
+const app = express();
+app.get("/", (req, res) => res.send("🤖 Bot is running 24/7!"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+
+// ================= MONGODB CONNECT =================
 mongoose.connect(mongoURL, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => console.log("❌ MongoDB Error:", err));
 
-// ================= Schemas =================
+// ================= SCHEMAS =================
 const userSchema = new mongoose.Schema({
   userId: String,
   balance: { type: Number, default: 0 }
@@ -24,14 +33,16 @@ const User = mongoose.model("User", userSchema);
 const depositSchema = new mongoose.Schema({
   userId: String,
   amount: Number,
-  status: { type: String, default: "pending" }
+  utr: String,
+  status: { type: String, default: "pending" },
+  date: { type: Date, default: Date.now }
 });
 const Deposit = mongoose.model("Deposit", depositSchema);
 
-// ================= Commands =================
+// ================= BOT COMMANDS =================
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, `👋 Welcome ${msg.from.first_name}!\n\nCommands:\n💰 /deposit - টাকা Add করো\n📊 /balance - Balance Check করো`);
+  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\n💰 Deposit করতে /deposit\n📊 Balance চেক করতে /balance\n📜 Deposit History দেখতে /history`);
 });
 
 bot.onText(/\/balance/, async (msg) => {
@@ -41,66 +52,125 @@ bot.onText(/\/balance/, async (msg) => {
     user = new User({ userId: chatId, balance: 0 });
     await user.save();
   }
-  await bot.sendMessage(chatId, `📊 Your Balance: ${user.balance} INR`);
+  await bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`);
 });
 
+bot.onText(/\/history/, async (msg) => {
+  const chatId = msg.chat.id;
+  const deposits = await Deposit.find({ userId: chatId }).sort({ date: -1 });
+  if (!deposits.length) return bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।");
+
+  let text = "📜 আপনার Deposit History:\n\n";
+  deposits.forEach(d => {
+    text += `💰 ${d.amount} INR | UTR: ${d.utr} | Status: ${d.status}\n`;
+  });
+  bot.sendMessage(chatId, text);
+});
+
+// ================= DEPOSIT FLOW =================
 const depositStep = {};
+const utrStep = {};
 
 bot.onText(/\/deposit/, async (msg) => {
   const chatId = msg.chat.id;
   depositStep[chatId] = true;
-  await bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? Amount লিখো (যেমন: 100, 200)");
+  await bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? (যেমন: 100, 200)");
 });
 
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
+  // STEP 1: Amount
   if (depositStep[chatId] && !isNaN(text)) {
     const amount = parseInt(text);
+    await bot.sendPhoto(chatId, QR_IMAGE, {
+      caption: `📥 Deposit শুরু হয়েছে!\n💰 Amount: ${amount} INR\n\n✅ Payment করার পর UTR/Txn ID লিখুন (কমপক্ষে 12 অক্ষর)।`
+    });
+    utrStep[chatId] = { amount };
+    delete depositStep[chatId];
+    return;
+  }
 
-    const deposit = new Deposit({ userId: chatId, amount });
+  // STEP 2: UTR
+  if (utrStep[chatId]) {
+    const utr = text.trim();
+    if (utr.length < 12) return bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
+
+    // ✅ Duplicate Check
+    const existing = await Deposit.findOne({ utr });
+    if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
+
+    // Save Deposit
+    const deposit = new Deposit({ userId: chatId, amount: utrStep[chatId].amount, utr, status: "pending" });
     await deposit.save();
 
-    await bot.sendPhoto(chatId, QR_IMAGE, {
-      caption: `📥 Deposit Request Created!\n\nAmount: ${amount} INR\n\n📌 QR Code Scan করে টাকা পাঠাও।`
-    });
+    await bot.sendMessage(chatId, `✅ Deposit Request Created!\n💰 Amount: ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`);
 
-    await bot.sendMessage(ADMIN_ID, `📢 নতুন Deposit Request এসেছে:\n\n👤 User: ${msg.from.username || msg.from.first_name}\n🆔 ID: ${chatId}\n💰 Amount: ${amount} INR\n\nApprove করতে:\n/approve ${chatId} ${amount}`);
+    // ================= Admin Inline Buttons =================
+    const approveData = `approve_${deposit._id}`;
+    const cancelData = `cancel_${deposit._id}`;
 
-    delete depositStep[chatId];
+    await bot.sendMessage(ADMIN_ID, 
+      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`, 
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Approve", callback_data: approveData },
+              { text: "❌ Cancel", callback_data: cancelData }
+            ]
+          ]
+        }
+      }
+    );
+
+    delete utrStep[chatId];
   }
 });
 
-// Admin Approve
-bot.onText(/\/approve (.+) (.+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== ADMIN_ID) {
-    return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin এই Command চালাতে পারবে।");
+// ================= ADMIN INLINE BUTTON CALLBACK =================
+bot.on("callback_query", async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
+  if (chatId.toString() !== ADMIN_ID) {
+    return bot.answerCallbackQuery(query.id, { text: "❌ শুধুমাত্র Admin পারবেন।" });
   }
 
-  const userId = match[1];
-  const amount = parseInt(match[2]);
+  const [action, depositId] = data.split("_");
+  const deposit = await Deposit.findById(depositId);
+  if (!deposit) return bot.answerCallbackQuery(query.id, { text: "❌ Deposit পাওয়া যায়নি।" });
 
-  let user = await User.findOne({ userId });
-  if (!user) {
-    user = new User({ userId, balance: 0 });
+  const user = await User.findOne({ userId: deposit.userId }) || new User({ userId: deposit.userId, balance: 0 });
+
+  if (action === "approve") {
+    user.balance += deposit.amount;
+    deposit.status = "approved";
+    await user.save();
+    await deposit.save();
+
+    bot.sendMessage(deposit.userId, `✅ আপনার ${deposit.amount} INR Deposit Approved হয়েছে!\n📊 New Balance: ${user.balance} INR`);
+    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
+    bot.answerCallbackQuery(query.id, { text: "✅ Approved!" });
+
+  } else if (action === "cancel") {
+    deposit.status = "cancelled";
+    await deposit.save();
+
+    bot.sendMessage(deposit.userId, `❌ আপনার Deposit ${deposit.amount} INR Cancelled হয়েছে।`);
+    bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
+    bot.answerCallbackQuery(query.id, { text: "❌ Cancelled!" });
   }
-  user.balance += amount;
-  await user.save();
-
-  await Deposit.updateOne({ userId, amount, status: "pending" }, { status: "approved" });
-
-  await bot.sendMessage(userId, `✅ আপনার ${amount} INR জমা হয়েছে!\n📊 New Balance: ${user.balance} INR`);
-  await bot.sendMessage(msg.chat.id, `👍 Approved: ${amount} INR for User ${userId}`);
 });
 
-// Admin QR Change
+// ================= ADMIN QR CHANGE =================
 bot.onText(/\/setqr (.+)/, async (msg, match) => {
-  if (msg.chat.id.toString() !== ADMIN_ID) {
-    return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR কোড পরিবর্তন করতে পারবে।");
-  }
-
-  const newQr = match[1];
-  QR_IMAGE = newQr;
-  await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হয়েছে!\n📌 ${QR_IMAGE}`);
+  if (msg.chat.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR পরিবর্তন করতে পারবে।");
+  QR_IMAGE = match[1];
+  await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হলো!\n📌 ${QR_IMAGE}`);
 });
+
+// ================= ERROR HANDLER =================
+process.on("unhandledRejection", (err) => console.error("Unhandled Rejection:", err));
+process.on("uncaughtException", (err) => console.error("Uncaught Exception:", err));
