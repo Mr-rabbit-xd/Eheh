@@ -1,12 +1,11 @@
 {
-  "name": "telegram-firebase-bot",
+  "name": "telegram-deposit-bot",
   "version": "1.0.0",
+  "main": "bot.js",
   "type": "module",
-  "scripts": {
-    "start": "node bot.js"
-  },
   "dependencies": {
-    "node-telegram-bot-api": "^0.61.0",
-    "firebase": "^11.9.1"
+    "dotenv": "^16.4.5",
+    "firebase": "^11.9.1",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
