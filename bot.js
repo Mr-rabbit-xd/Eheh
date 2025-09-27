@@ -39,49 +39,57 @@ const depositSchema = new mongoose.Schema({
 });
 const Deposit = mongoose.model("Deposit", depositSchema);
 
-// ================= BOT COMMANDS =================
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\n💰 Deposit করতে /deposit\n📊 Balance চেক করতে /balance\n📜 Deposit History দেখতে /history`);
-});
-
-bot.onText(/\/balance/, async (msg) => {
-  const chatId = msg.chat.id;
-  let user = await User.findOne({ userId: chatId });
-  if (!user) {
-    user = new User({ userId: chatId, balance: 0 });
-    await user.save();
-  }
-  await bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`);
-});
-
-bot.onText(/\/history/, async (msg) => {
-  const chatId = msg.chat.id;
-  const deposits = await Deposit.find({ userId: chatId }).sort({ date: -1 });
-  if (!deposits.length) return bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।");
-
-  let text = "📜 আপনার Deposit History:\n\n";
-  deposits.forEach(d => {
-    text += `💰 ${d.amount} INR | UTR: ${d.utr} | Status: ${d.status}\n`;
-  });
-  bot.sendMessage(chatId, text);
-});
-
-// ================= DEPOSIT FLOW =================
+// ================= STATE TRACKING =================
 const depositStep = {};
 const utrStep = {};
 
-bot.onText(/\/deposit/, async (msg) => {
+// ================= START + BUTTON MENU =================
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  depositStep[chatId] = true;
-  await bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? (যেমন: 100, 200)");
+  const options = {
+    reply_markup: {
+      keyboard: [
+        [{ text: "💰 Deposit" }, { text: "📊 Balance" }],
+        [{ text: "📜 History" }]
+      ],
+      resize_keyboard: true
+    }
+  };
+  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\nনিচের button থেকে choose করো।`, options);
 });
 
+// ================= BUTTON HANDLING =================
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // STEP 1: Amount
+  // User Menu Buttons
+  if (text === "💰 Deposit") {
+    depositStep[chatId] = true;
+    return bot.sendMessage(chatId, "💰 কত টাকা Add করতে চাও? (যেমন: 100, 200)");
+  }
+
+  if (text === "📊 Balance") {
+    let user = await User.findOne({ userId: chatId });
+    if (!user) {
+      user = new User({ userId: chatId, balance: 0 });
+      await user.save();
+    }
+    return bot.sendMessage(chatId, `📊 আপনার Balance: ${user.balance} INR`);
+  }
+
+  if (text === "📜 History") {
+    const deposits = await Deposit.find({ userId: chatId }).sort({ date: -1 });
+    if (!deposits.length) return bot.sendMessage(chatId, "📜 কোনো Deposit History নেই।");
+
+    let historyText = "📜 আপনার Deposit History:\n\n";
+    deposits.forEach(d => {
+      historyText += `💰 ${d.amount} INR | UTR: ${d.utr} | Status: ${d.status}\n`;
+    });
+    return bot.sendMessage(chatId, historyText);
+  }
+
+  // STEP 1: Deposit Amount
   if (depositStep[chatId] && !isNaN(text)) {
     const amount = parseInt(text);
     await bot.sendPhoto(chatId, QR_IMAGE, {
@@ -97,7 +105,7 @@ bot.on("message", async (msg) => {
     const utr = text.trim();
     if (utr.length < 12) return bot.sendMessage(chatId, "❌ UTR কমপক্ষে 12 অক্ষর হতে হবে। আবার লিখুন:");
 
-    // ✅ Duplicate Check
+    // Duplicate Check
     const existing = await Deposit.findOne({ utr });
     if (existing) return bot.sendMessage(chatId, "❌ এই UTR আগে ব্যবহার হয়েছে। নতুন UTR দিন।");
 
@@ -107,12 +115,12 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(chatId, `✅ Deposit Request Created!\n💰 Amount: ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`);
 
-    // ================= Admin Inline Buttons =================
+    // Admin Notification with Inline Buttons
     const approveData = `approve_${deposit._id}`;
     const cancelData = `cancel_${deposit._id}`;
 
-    await bot.sendMessage(ADMIN_ID, 
-      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`, 
+    await bot.sendMessage(ADMIN_ID,
+      `📢 নতুন Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount} INR\n🔑 UTR: ${utr}`,
       {
         reply_markup: {
           inline_keyboard: [
