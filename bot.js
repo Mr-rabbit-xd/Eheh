@@ -28,7 +28,8 @@ const userSchema = new mongoose.Schema({
   userId: String,
   balance: { type: Number, default: 0 },
   refCode: String,
-  referredBy: String
+  referredBy: String,
+  keys: { type: [String], default: [] }
 });
 const User = mongoose.model("User", userSchema);
 
@@ -46,7 +47,8 @@ const mainMenu = {
   reply_markup: {
     keyboard: [
       [{ text: "💰 Deposit" }, { text: "📊 Balance" }],
-      [{ text: "💸 Referral" }, { text: "💳 Transaction" }]
+      [{ text: "💸 Referral" }, { text: "💳 Transaction" }],
+      [{ text: "🔑 Key" }]
     ],
     resize_keyboard: true
   }
@@ -85,6 +87,16 @@ const transactionMenu = {
   }
 };
 
+const keyMenu = {
+  reply_markup: {
+    keyboard: [
+      [{ text: "📥 Get Key" }, { text: "🗝 Your Keys" }],
+      [{ text: "⬅️ Back" }]
+    ],
+    resize_keyboard: true
+  }
+};
+
 // ================= BOT LOGIC =================
 const depositStep = {};
 const utrStep = {};
@@ -116,7 +128,7 @@ bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
     await user.save();
   }
 
-  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\n💰 Deposit করতে "💰 Deposit" বাটন চাপুন\n📊 Balance দেখতে "📊 Balance"\n💸 Referral, 💳 Transaction সব মেনু বাটন ব্যবহার করুন।`, mainMenu);
+  await bot.sendMessage(chatId, `👋 হ্যালো ${msg.from.first_name}!\n\n💰 Deposit করতে "💰 Deposit" বাটন চাপুন\n📊 Balance দেখতে "📊 Balance"\n💸 Referral, 💳 Transaction, 🔑 Key সব মেনু বাটন ব্যবহার করুন।`, mainMenu);
 });
 
 // ================= MAIN BUTTON HANDLER =================
@@ -145,6 +157,19 @@ bot.on("message", async (msg) => {
 
   if (text === "💳 Transaction") return bot.sendMessage(chatId, "Transaction Menu", transactionMenu);
 
+  if (text === "🔑 Key") return bot.sendMessage(chatId, "🔑 Key Menu", keyMenu);
+
+  // ---------------- Key Menu ----------------
+  if (text === "📥 Get Key") {
+    return bot.sendMessage(chatId, "📥 Key পাওয়ার জন্য admin এর সাথে যোগাযোগ করুন।", keyMenu);
+  }
+
+  if (text === "🗝 Your Keys") {
+    let user = await User.findOne({ userId: chatId });
+    if (!user || !user.keys.length) return bot.sendMessage(chatId, "❌ আপনার কোনো Key নেই।", keyMenu);
+    return bot.sendMessage(chatId, `🗝 আপনার Keys:\n${user.keys.join("\n")}`, keyMenu);
+  }
+
   // ---------------- Deposit Menu ----------------
   if (text === "💵 Deposit Amount") {
     depositStep[chatId] = true;
@@ -172,10 +197,13 @@ bot.on("message", async (msg) => {
   }
 
   if (text === "🏆 Top Referrers") {
-    const users = await User.find().sort({ balance: -1 }).limit(10);
+    const users = await User.find();
     let msgText = "🏆 Top Referrers:\n\n";
-    users.forEach(u => msgText += `👤 ${u.userId} - Balance: ${u.balance} INR\n`);
-    return bot.sendMessage(chatId, msgText, referralMenu);
+    for (const u of users) {
+      const refs = await User.countDocuments({ referredBy: u.refCode });
+      if (refs > 0) msgText += `👤 ${u.userId} - ${refs} referrals\n`;
+    }
+    return bot.sendMessage(chatId, msgText || "❌ এখনো কোনো referral নেই।", referralMenu);
   }
 
   if (text === "💸 Your Referral Link") {
@@ -269,6 +297,19 @@ bot.onText(/\/setqr (.+)/, async (msg, match) => {
   if (msg.chat.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin QR পরিবর্তন করতে পারবে।");
   QR_IMAGE = match[1];
   await bot.sendMessage(msg.chat.id, `✅ নতুন QR কোড সেট করা হলো!\n📌 ${QR_IMAGE}`);
+});
+
+// ================= ADMIN ADD KEY =================
+bot.onText(/\/addkey (\d+) (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ শুধুমাত্র Admin Key যোগ করতে পারবে।");
+  const userId = match[1];
+  const newKey = match[2];
+  const user = await User.findOne({ userId });
+  if (!user) return bot.sendMessage(msg.chat.id, "❌ User পাওয়া যায়নি।");
+  user.keys.push(newKey);
+  await user.save();
+  bot.sendMessage(userId, `🔑 আপনার জন্য নতুন Key Added হয়েছে:\n${newKey}`);
+  bot.sendMessage(msg.chat.id, `✅ Key সফলভাবে যোগ করা হলো User ${userId}-এর জন্য।`);
 });
 
 // ================= ERROR HANDLER =================
