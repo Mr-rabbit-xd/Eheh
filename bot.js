@@ -1,106 +1,218 @@
 import TelegramBot from "node-telegram-bot-api";
-import mongoose from "mongoose";
-import express from "express";
+import dotenv from "dotenv";
 
-// ================= ENV CONFIG =================
+dotenv.config();
+
+// ================= CONFIG ==================
 const token = process.env.BOT_TOKEN;
-const mongoURL = process.env.MONGO_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
-const BOT_USERNAME = process.env.BOT_USERNAME; // Example: H4CK_KEY_bot
-let QR_IMAGE = process.env.QR_IMAGE || "https://via.placeholder.com/300?text=QR+Code";
+const REF_BONUS_PERCENT = 15; // % referral bonus (can change)
 
-// ================= TELEGRAM BOT =================
+// Bot Init
 const bot = new TelegramBot(token, { polling: true });
 
-// ================= EXPRESS SERVER (Keep Alive) =================
-const app = express();
-app.get("/", (req, res) => res.send("🤖 Bot is running 24/7!"));
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+// ================= DATABASE ==================
+let users = {}; // { userId: { balance, referrals:[], refCode, referredBy, deposits:[], key } }
 
-// ================= MONGODB CONNECT =================
-mongoose.connect(mongoURL, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.log("❌ MongoDB Error:", err));
+// Helper: Generate Unique Referral Code
+function generateRefCode(userId) {
+  return "REF" + userId.toString();
+}
 
-// ================= SCHEMAS =================
-const userSchema = new mongoose.Schema({
-  userId: String,
-  balance: { type: Number, default: 0 },
-  refCode: String,
-  referredBy: String,
-  keys: { type: [String], default: [] }
+// Helper: Get Main Menu
+function getMainMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: "💰 Balance" }, { text: "💸 Deposit" }],
+        [{ text: "👥 Referral" }, { text: "🔑 Key" }],
+      ],
+      resize_keyboard: true,
+    },
+  };
+}
+
+// Submenus
+function getDepositMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: "💳 New Deposit" }],
+        [{ text: "📜 Deposit History" }],
+        [{ text: "⬅️ Back" }],
+      ],
+      resize_keyboard: true,
+    },
+  };
+}
+
+function getReferralMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: "👀 Check Referrals" }, { text: "🏆 Top Referrers" }],
+        [{ text: "⬅️ Back" }],
+      ],
+      resize_keyboard: true,
+    },
+  };
+}
+
+function getKeyMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: "🆕 Get Key" }, { text: "🔑 Your Key" }],
+        [{ text: "⬅️ Back" }],
+      ],
+      resize_keyboard: true,
+    },
+  };
+}
+
+// ================= BOT LOGIC ==================
+
+// Start Command
+bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const refCode = match[1];
+
+  if (!users[userId]) {
+    users[userId] = {
+      balance: 0,
+      referrals: [],
+      refCode: generateRefCode(userId),
+      referredBy: null,
+      deposits: [],
+      key: null,
+    };
+  }
+
+  // যদি referral দিয়ে আসা হয়
+  if (refCode) {
+    const refUser = Object.values(users).find((u) => u.refCode === refCode);
+    if (refUser && refUser !== users[userId]) {
+      users[userId].referredBy = refUser.refCode;
+      refUser.referrals.push(userId);
+
+      // Referrer কে নোটিফাই করো
+      const refUserId = Object.keys(users).find(
+        (id) => users[id].refCode === refCode
+      );
+      if (refUserId) {
+        bot.sendMessage(
+          refUserId,
+          `🎉 আপনার referral লিঙ্ক দিয়ে নতুন একজন (${msg.from.first_name}) জয়েন করেছে!`
+        );
+      }
+    }
+  }
+
+  bot.sendMessage(chatId, "👋 স্বাগতম! নিচের মেনু থেকে নির্বাচন করুন:", getMainMenu());
 });
-const User = mongoose.model("User", userSchema);
 
-const depositSchema = new mongoose.Schema({
-  userId: String,
-  amount: Number,
-  utr: String,
-  status: { type: String, default: "pending" },
-  date: { type: Date, default: Date.now }
+// ================== HANDLERS ==================
+
+// Balance
+bot.onText(/💰 Balance/, (msg) => {
+  const user = users[msg.from.id];
+  bot.sendMessage(
+    msg.chat.id,
+    `💰 আপনার Balance: ${user.balance}৳`,
+    getMainMenu()
+  );
 });
-const Deposit = mongoose.model("Deposit", depositSchema);
 
-// ================= BUTTON KEYBOARDS =================
-const mainMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "💰 Deposit" }, { text: "📊 Balance" }],
-      [{ text: "💸 Referral" }, { text: "💳 Transaction" }],
-      [{ text: "🔑 Key" }]
-    ],
-    resize_keyboard: true
-  }
-};
+// Deposit
+bot.onText(/💸 Deposit/, (msg) => {
+  bot.sendMessage(msg.chat.id, "💸 Deposit মেনু:", getDepositMenu());
+});
 
-const depositMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "💵 Deposit Amount" }],
-      [{ text: "📜 Deposit History" }],
-      [{ text: "⬅️ Back" }]
-    ],
-    resize_keyboard: true
-  }
-};
+bot.onText(/💳 New Deposit/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    "📝 আপনার deposit UTR দিন (ডেমো)। [এখানে payment integration লাগবে]"
+  );
+});
 
-const referralMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "💸 Your Referral Link" }],
-      [{ text: "👀 Check Referrals" }],
-      [{ text: "🏆 Top Referrers" }],
-      [{ text: "⬅️ Back" }]
-    ],
-    resize_keyboard: true
-  }
-};
+bot.onText(/📜 Deposit History/, (msg) => {
+  const user = users[msg.from.id];
+  if (user.deposits.length === 0)
+    return bot.sendMessage(msg.chat.id, "❌ কোনো deposit history নেই।", getDepositMenu());
 
-const transactionMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "📜 Transaction History" }],
-      [{ text: "⬅️ Back" }]
-    ],
-    resize_keyboard: true
-  }
-};
+  let text = "📜 আপনার Deposit History:\n\n";
+  user.deposits.forEach((d, i) => {
+    text += `${i + 1}. ${d.amount}৳ (UTR: ${d.utr})\n`;
+  });
 
-const keyMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: "📥 Get Key" }, { text: "🗝 Your Keys" }],
-      [{ text: "⬅️ Back" }]
-    ],
-    resize_keyboard: true
-  }
-};
+  bot.sendMessage(msg.chat.id, text, getDepositMenu());
+});
 
-// ================= BOT LOGIC =================
-const depositStep = {};
-const utrStep = {};
+// Referral
+bot.onText(/👥 Referral/, (msg) => {
+  const user = users[msg.from.id];
+  const botName = process.env.BOT_USERNAME; // Bot username from env
+  const refLink = `https://t.me/${botName}?start=${user.refCode}`;
 
+  bot.sendMessage(
+    msg.chat.id,
+    `💸 আপনার Referral Link:\n${refLink}`,
+    getReferralMenu()
+  );
+});
+
+bot.onText(/👀 Check Referrals/, (msg) => {
+  const user = users[msg.from.id];
+  if (user.referrals.length === 0)
+    return bot.sendMessage(msg.chat.id, "❌ এখনও কোনো referral নেই।", getReferralMenu());
+
+  let text = "👥 আপনার Referrals:\n";
+  user.referrals.forEach((r, i) => {
+    text += `${i + 1}. ${users[r]?.name || r}\n`;
+  });
+
+  bot.sendMessage(msg.chat.id, text, getReferralMenu());
+});
+
+bot.onText(/🏆 Top Referrers/, (msg) => {
+  const leaderboard = Object.entries(users)
+    .map(([id, u]) => ({ id, count: u.referrals.length }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  if (leaderboard.length === 0)
+    return bot.sendMessage(msg.chat.id, "❌ কোনো referral data নেই।", getReferralMenu());
+
+  let text = "🏆 Top 10 Referrers:\n\n";
+  leaderboard.forEach((u, i) => {
+    text += `${i + 1}. ${users[u.id]?.name || u.id} → ${u.count} জন\n`;
+  });
+
+  bot.sendMessage(msg.chat.id, text, getReferralMenu());
+});
+
+// Key Menu
+bot.onText(/🔑 Key/, (msg) => {
+  bot.sendMessage(msg.chat.id, "🔑 Key মেনু:", getKeyMenu());
+});
+
+bot.onText(/🆕 Get Key/, (msg) => {
+  const user = users[msg.from.id];
+  user.key = "KEY-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+  bot.sendMessage(msg.chat.id, `✅ আপনার নতুন Key তৈরি হয়েছে:\n${user.key}`, getKeyMenu());
+});
+
+bot.onText(/🔑 Your Key/, (msg) => {
+  const user = users[msg.from.id];
+  if (!user.key) return bot.sendMessage(msg.chat.id, "❌ এখনও কোনো Key তৈরি হয়নি।", getKeyMenu());
+  bot.sendMessage(msg.chat.id, `🔑 আপনার Key:\n${user.key}`, getKeyMenu());
+});
+
+// Back Button
+bot.onText(/⬅️ Back/, (msg) => {
+  bot.sendMessage(msg.chat.id, "⬅️ মেইন মেনু:", getMainMenu());
+});
 // ================= START COMMAND =================
 bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
