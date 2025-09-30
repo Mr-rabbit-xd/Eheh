@@ -2,6 +2,8 @@ import TelegramBot from "node-telegram-bot-api";
 import mongoose from "mongoose";
 import express from "express";
 import dotenv from "dotenv";
+import crypto from "crypto";
+import bodyParser from "body-parser";
 
 dotenv.config();
 
@@ -46,6 +48,8 @@ const Deposit = mongoose.model("Deposit", depositSchema);
 
 // ================= EXPRESS =================
 const app = express();
+app.use(bodyParser.json());
+
 app.get("/", (req, res) => res.send("🤖 Bot is running 24/7!"));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
@@ -173,7 +177,6 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // ---------------- Deposit Step ----------------
   if (depositStep[chatId] && !isNaN(text)) {
     const amount = parseInt(text);
     await bot.sendPhoto(chatId, QR_IMAGE, {
@@ -196,7 +199,6 @@ bot.on("message", async (msg) => {
 
     await bot.sendMessage(chatId, `✅ Deposit Request Created!\nAmount: ${utrStep[chatId].amount}৳\nUTR: ${utr}`);
 
-    // Notify Admin
     await bot.sendMessage(
       ADMIN_ID,
       `📢 New Deposit Request:\n👤 ${msg.from.first_name} (@${msg.from.username || "NA"})\n💰 ${utrStep[chatId].amount}৳\nUTR: ${utr}\n\nUse inline buttons to Approve/Cancel.`,
@@ -232,7 +234,6 @@ bot.on("callback_query", async (query) => {
     user.balance += deposit.amount;
     deposit.status = "approved";
 
-    // Referral bonus
     if (user.referredBy) {
       const refUser = await User.findOne({ refCode: user.referredBy });
       if (refUser) {
@@ -254,9 +255,7 @@ bot.on("callback_query", async (query) => {
 
   bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
   bot.answerCallbackQuery(query.id, { text: action === "approve" ? "✅ Approved!" : "❌ Cancelled!" });
-});
-
-// ---------------- REFERRAL MENU ----------------
+  // ---------------- REFERRAL MENU ----------------
 bot.onText(/👥 Referral/, async (msg) => {
   const user = await User.findOne({ userId: msg.from.id });
   const refLink = `https://t.me/${BOT_USERNAME}?start=${user.refCode}`;
@@ -324,3 +323,31 @@ bot.onText(/\/setqr (.+)/, (msg, match) => {
 // ---------------- ERROR HANDLING ----------------
 process.on("unhandledRejection", err => console.error("Unhandled Rejection:", err));
 process.on("uncaughtException", err => console.error("Uncaught Exception:", err));
+
+// ---------------- ADMIN API ----------------
+// Access Admin Panel Data with password
+const ADMIN_API_PASSWORD = process.env.ADMIN_API_PASSWORD || "SuperSecret123";
+
+app.post("/admin/data", async (req, res) => {
+  const { password } = req.body;
+  if (password !== ADMIN_API_PASSWORD) return res.status(403).json({ error: "❌ Unauthorized" });
+
+  try {
+    const totalUsers = await User.countDocuments();
+    const totalDeposits = await Deposit.countDocuments();
+    const approvedDeposits = await Deposit.aggregate([{ $match: { status: "approved" } }, { $group: { _id: null, total: { $sum: "$amount" } } }]);
+    const totalKeyGenerated = await User.countDocuments({ key: { $exists: true } });
+    const referralLeaderboard = await User.find().sort({ referrals: -1 }).limit(10);
+
+    res.json({
+      totalUsers,
+      totalDeposits,
+      approvedDepositAmount: approvedDeposits[0]?.total || 0,
+      totalKeyGenerated,
+      referralLeaderboard: referralLeaderboard.map(u => ({ name: u.name, referrals: u.referrals.length })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "❌ Server error" });
+  }
+});
