@@ -1,19 +1,33 @@
 {
-  "name": "telegram-deposit-bot",
+  "name": "telegram-key-bot",
   "version": "1.0.0",
-  "description": "Telegram bot with deposit, referral, key system, and 24/7 uptime",
+  "description": "Telegram Bot with Key System (Firebase + MongoDB)",
   "main": "bot.js",
   "type": "module",
   "scripts": {
-    "start": "node bot.js"
-  },
-  "engines": {
-    "node": ">=22.0.0"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
   },
   "dependencies": {
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "mongoose": "^7.7.1",
-    "node-telegram-bot-api": "^0.61.0"
-  }
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.5.0",
+    "mongoose": "^8.4.1",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "firebase",
+    "mongodb",
+    "key-system"
+  ],
+  "author": "Your Name",
+  "license": "ISC"
 }
