@@ -324,81 +324,75 @@ bot.on("callback_query", async (query) => {
     bot.answerCallbackQuery(query.id);
   }
 });
-// ---------------- ADMIN COMMANDS ----------------
-bot.onText(/\/setqr (.+)/, (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
-  QR_IMAGE = match[1];
-  bot.sendMessage(msg.chat.id, `✅ New QR set:\n${QR_IMAGE}`);
+// ================== ADMIN PANEL ==================
+bot.onText(/\/admin/, async (msg) => {
+  const chatId = msg.chat.id.toString();
+  if (chatId !== ADMIN_ID) return bot.sendMessage(chatId, "❌ Only admin.");
+
+  const text = `
+👑 Admin Panel:
+
+📊 /stats → Total users & deposits & wallet balance
+📢 /broadcast <text> → Send message to all users
+💳 /setqr <url> → Change deposit QR image
+🔑 /setkeyprice <days> <price> → Update key price
+🎁 /addpromo <CODE> <amount> → Add promo code
+❌ /removepromo <CODE> → Remove promo code
+`;
+
+  bot.sendMessage(chatId, text);
 });
 
-bot.onText(/\/setkeyprice (\d+) (\d+)/, (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
-  const days = parseInt(match[1]);
-  const price = parseInt(match[2]);
-  KEY_PRICES[days] = price;
-  bot.sendMessage(msg.chat.id, `✅ Key price updated:\n${days} day → ${price}৳`);
-});
-
-// Broadcast message to all users
-bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
-  const text = match[1];
-  const users = await User.find();
-  users.forEach(u => bot.sendMessage(u.userId, `📢 Admin Broadcast:\n\n${text}`));
-  bot.sendMessage(msg.chat.id, `✅ Broadcast sent to ${users.length} users`);
-});
-
-// Stats command
+// ---------------- STATS ----------------
 bot.onText(/\/stats/, async (msg) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
   const users = await User.find();
   const deposits = await Deposit.find();
   let totalBalance = 0;
-  let totalUsers = users.length;
   users.forEach(u => totalBalance += u.balance);
-  bot.sendMessage(msg.chat.id,
-    `📊 Stats:\n\nTotal Users: ${totalUsers}\nTotal Balance in Wallets: ${totalBalance}৳\nTotal Deposits: ${deposits.length}`
+
+  bot.sendMessage(ADMIN_ID, 
+    `📊 Stats:\n\nTotal Users: ${users.length}\nTotal Wallet Balance: ${totalBalance}৳\nTotal Deposits: ${deposits.length}`
   );
 });
 
-// Promo Code System
-let PROMO_CODES = {}; // {CODE: amount}
+// ---------------- BROADCAST ----------------
+bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
+  const text = match[1];
+  const users = await User.find();
+  users.forEach(u => bot.sendMessage(u.userId, `📢 Admin Broadcast:\n\n${text}`));
+  bot.sendMessage(ADMIN_ID, `✅ Broadcast sent to ${users.length} users`);
+});
 
+// ---------------- SET QR IMAGE ----------------
+bot.onText(/\/setqr (.+)/, (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
+  QR_IMAGE = match[1];
+  bot.sendMessage(ADMIN_ID, `✅ Deposit QR updated:\n${QR_IMAGE}`);
+});
+
+// ---------------- SET KEY PRICE ----------------
+bot.onText(/\/setkeyprice (\d+) (\d+)/, (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
+  const days = parseInt(match[1]);
+  const price = parseInt(match[2]);
+  KEY_PRICES[days] = price;
+  bot.sendMessage(ADMIN_ID, `✅ Key price updated: ${days} day → ${price}৳`);
+});
+
+// ---------------- PROMO CODES ----------------
 bot.onText(/\/addpromo (\w+) (\d+)/, (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
   const code = match[1].toUpperCase();
   const amount = parseInt(match[2]);
   PROMO_CODES[code] = amount;
-  bot.sendMessage(msg.chat.id, `✅ Promo code added: ${code} → ${amount}৳`);
+  bot.sendMessage(ADMIN_ID, `✅ Promo code added: ${code} → ${amount}৳`);
 });
 
 bot.onText(/\/removepromo (\w+)/, (msg, match) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ Only admin.");
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
   const code = match[1].toUpperCase();
   delete PROMO_CODES[code];
-  bot.sendMessage(msg.chat.id, `✅ Promo code removed: ${code}`);
+  bot.sendMessage(ADMIN_ID, `✅ Promo code removed: ${code}`);
 });
-
-bot.onText(/💸 Apply Promo/, async (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Enter your Promo Code:");
-  const listener = async (promoMsg) => {
-    if (promoMsg.chat.id !== chatId) return;
-    const code = promoMsg.text.toUpperCase();
-    if (PROMO_CODES[code]) {
-      const user = await User.findOne({ userId: chatId });
-      const amount = PROMO_CODES[code];
-      user.balance += amount;
-      await user.save();
-      bot.sendMessage(chatId, `✅ Promo applied! ${amount}৳ added to your balance.\n💰 New Balance: ${user.balance}৳`);
-    } else {
-      bot.sendMessage(chatId, "❌ Invalid Promo Code.");
-    }
-    bot.removeListener("message", listener);
-  };
-  bot.on("message", listener);
-});
-
-// ---------------- ERROR HANDLING ----------------
-process.on("unhandledRejection", err => console.error("Unhandled Rejection:", err));
-process.on("uncaughtException", err => console.error("Uncaught Exception:", err));
